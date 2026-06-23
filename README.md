@@ -1,173 +1,140 @@
-# FDE_SR: Frequency-Decoupled Enhancement for Real-World Image Super-Resolution
+﻿# ReF-WRD: Reliability-Aware Frequency Conditioning and Wavelet-Guided Residual Diffusion
 
-FDE_SR is a real-world image super-resolution model built around frequency-aware
-conditioning and residual enhancement. The model uses a one-step latent
-restoration backbone to produce a clean base image, then refines structure and
-texture with a frequency-decoupled prompt learner and a second-stage residual
-correction module.
+This repository provides the core implementation and main evaluation protocol for **ReF-WRD**, the method described in the manuscript:
 
-## Model Overview
+> Reliability-Aware Frequency Conditioning and Wavelet-Guided Residual Diffusion for Real-World Image Super-Resolution
 
-FDE_SR contains four main parts:
-
-- **Frequency-Decoupled Prompt Learning**: extracts low-frequency and
-  high-frequency statistics from the degraded input and injects them into text
-  conditioning tokens.
-- **One-Step Latent Base Restoration**: generates an initial high-resolution
-  restoration in a single denoising step.
-- **Stage-II Residual Correction**: predicts a residual map using the degraded
-  input, the base restoration, and their high-frequency responses.
-- **Adaptive Wavelet Residual Modulation**: decomposes the residual into Haar
-  wavelet bands and adaptively modulates low/high-frequency components before
-  reconstruction.
-
-The training objective combines reconstruction, perceptual, distribution
-matching, residual alignment, high-frequency, and wavelet consistency losses.
-
-## Repository Layout
+The code base retains several internal file names using `fde_sr` from an earlier development stage. These files implement the ReF-WRD model components described in the manuscript. The naming mapping is:
 
 ```text
-fde_sr.py                         FDE_SR generator and inference wrapper
-fde_sr_core.py                    one-step latent restoration backbone
-models/fde_sr_modules.py          frequency prompt, residual correction, losses
-train_fde_sr.py                   full FDE_SR training entry
-test_fde_sr.py                    FDE_SR inference entry
-test_fde_sr_modules.py            lightweight module tests
-scripts/train/train_fde_sr.sh     full training script
-scripts/train/train_fde_sr_stage2.sh
-scripts/test/test_fde_sr.sh       inference script
+fde_sr.py                         ReF-WRD generator and inference wrapper
+fde_sr_core.py                    OSEDiff-style one-step latent restoration backbone
+models/fde_sr_modules.py          FDPL, residual correction, A-WRM, and losses
+train_fde_sr_base.py              Stage-I base restoration training
+train_fde_sr.py                   full / Stage-II residual-correction training entry
+test_fde_sr.py                    ReF-WRD inference entry
+test_metrics.py                   metric evaluation entry
 ```
 
-The data loaders, RAM/DAPE prompt extractor, VAE tiling utilities, and metric
-scripts are kept in their original folders.
+## Main components
+
+- **FDPL**: frequency-decoupled prompt learning with reliability gating.
+- **Stage-I base restoration**: OSEDiff-style one-step latent restoration from the low-quality latent.
+- **Stage-II residual correction / RC**: scale-controlled residual correction around the frozen Stage-I base. This branch does not introduce an additional diffusion reverse sampling trajectory.
+- **A-WRM**: adaptive wavelet residual modulation in latent space.
+- **WCS**: image-domain wavelet consistency supervision.
+
+## Repository layout
+
+```text
+README.md                         main project overview
+REPRODUCIBILITY.md                training, inference, metrics, and seed protocol
+DATASETS.md                       dataset layout and list-file preparation
+MODEL_ZOO.md                      external assets and checkpoint information
+requirements.txt                  Python package requirements
+configs/                          example protocol/configuration files
+scripts/reproducibility/          documented reproduction scripts
+checkpoints/README.md             checkpoint placement notes
+```
+
+Core code:
+
+```text
+fde_sr.py
+fde_sr_core.py
+models/fde_sr_modules.py
+train_fde_sr_base.py
+train_fde_sr.py
+test_fde_sr.py
+test_metrics.py
+```
 
 ## Installation
 
 ```bash
-conda create -n FDE_SR python=3.10 -y
-conda activate FDE_SR
+conda create -n refwrd python=3.10 -y
+conda activate refwrd
 pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
-Required model assets:
+Required external assets:
 
-- SD2.1 base model directory for VAE, tokenizer, text encoder, scheduler, and UNet.
+- Stable Diffusion 2.1 base directory for VAE, tokenizer, text encoder, scheduler, and UNet.
 - RAM checkpoint.
 - DAPE/RAM fine-tuned checkpoint for degradation-aware prompts.
-- FDE_SR checkpoint for inference, or a base checkpoint for stage-II training.
+- ReF-WRD checkpoint for inference, or a Stage-I base checkpoint for Stage-II training.
 
-## Quick Inference
+See `MODEL_ZOO.md` for checkpoint and asset notes.
 
-```bash
-python test_fde_sr.py \
-    -i preset/datasets/test_dataset/input \
-    -o preset/datasets/test_dataset/output_fde_sr \
-    --fde_sr_path preset/models/fde_sr.pkl \
-    --pretrained_model_name_or_path SD21BASE_PATH \
-    --ram_ft_path DAPE_PATH \
-    --ram_path RAM_PATH \
-    --save_intermediate
-```
+## Dataset preparation
 
-`--save_intermediate` writes:
+Benchmark datasets are not redistributed. Obtain LSDIR, FFHQ, DIV2K-Val, RealSR, and DRealSR from their original providers.
 
-- final restored images to `output_fde_sr/`
-- base restoration to `output_fde_sr/base/`
-- normalized residual visualization to `output_fde_sr/residual/`
-
-## Train FDE_SR
-
-Prepare a txt file where each line is an absolute path to an HR training image:
-
-```text
-LSDIR/HR_merge/0000001.png
-LSDIR/HR_merge/0000002.png
-...
-```
-
-Full training:
+Generate training list files:
 
 ```bash
-CUDA_VISIBLE_DEVICES="0,1,2,3," accelerate launch train_fde_sr.py \
-    --pretrained_model_name_or_path=SD21BASE_PATH \
-    --ram_path=RAM_PATH \
-    --resume_fde_sr_path=preset/models/fde_sr_base.pkl \
-    --learning_rate=5e-5 \
-    --train_batch_size=4 \
-    --gradient_accumulation_steps=1 \
-    --enable_xformers_memory_efficient_attention \
-    --checkpointing_steps 500 \
-    --mixed_precision='fp16' \
-    --report_to "tensorboard" \
-    --seed 123 \
-    --output_dir=experience/fde_sr \
-    --dataset_txt_paths_list 'YOUR TXT FILE PATH','YOUR TXT FILE PATH' \
-    --dataset_prob_paths_list 1,1 \
-    --lambda_l2=1 \
-    --lambda_lpips=2 \
-    --lambda_vsd=1 \
-    --lambda_vsd_lora=1 \
-    --lambda_fde_wavelet=0.5 \
-    --lambda_fde_residual=0.25 \
-    --lambda_fde_high=0.1 \
-    --fde_hidden_dim=128 \
-    --fde_prompt_hidden_dim=256 \
-    --fde_num_blocks=6 \
-    --fde_residual_scale=0.25 \
-    --deg_file_path="params_realesrgan.yml" \
-    --tracker_project_name "train_fde_sr"
+bash scripts/reproducibility/prepare_data.sh \
+  /path/to/LSDIR/HR_merge \
+  /path/to/FFHQ/images \
+  data/lists
 ```
 
-Stage-II focused training:
+See `DATASETS.md` for the expected directory layout.
+
+## Quick inference
 
 ```bash
-bash scripts/train/train_fde_sr_stage2.sh
+export SD21BASE_PATH=/path/to/stable-diffusion-2-1-base
+export RAM_PATH=/path/to/ram_swin_large_14m.pth
+export DAPE_PATH=/path/to/DAPE.pth
+export REFWRD_CKPT=/path/to/refwrd_stage2.pkl
+
+bash scripts/reproducibility/run_test_refwrd.sh \
+  /path/to/LQ_images \
+  /path/to/output_dir
 ```
 
-## Checkpoint Format
+The main evaluation uses the fixed residual strength documented in the manuscript. In the public scripts this value is passed through `--fde_residual_scale`.
 
-FDE_SR checkpoints are dictionaries:
+## Training
 
-```python
-{
-    "format": "fde_sr_v1",
-    "base": {...},
-    "fde_prompt": {...},
-    "fde_stage2": {...},
-    "fde_config": {...},
-}
-```
-
-## Useful Ablations
-
-Prompt-only training:
+Stage-I base restoration:
 
 ```bash
-accelerate launch train_fde_sr.py ... --disable_stage2
+export SD21BASE_PATH=/path/to/stable-diffusion-2-1-base
+export RAM_PATH=/path/to/ram_swin_large_14m.pth
+export TRAIN_TXT=data/lists/lsdir_train.txt
+export FFHQ_TXT=data/lists/ffhq_first10k.txt
+export SEED=42
+bash scripts/reproducibility/run_stage1_base.sh
 ```
 
-Stage-II only:
+Stage-II residual correction:
 
 ```bash
-accelerate launch train_fde_sr.py ... --train_stage2_only
+export REFWRD_BASE_CKPT=/path/to/refwrd_stage1_base.pkl
+export SEED=42
+bash scripts/reproducibility/run_stage2_residual.sh
 ```
 
-Disable FDE-specific losses:
+Repeat the documented training protocol with seeds `42`, `123`, and `2026` for repeated-run reporting.
+
+## Metrics
 
 ```bash
---lambda_fde_wavelet=0 --lambda_fde_residual=0 --lambda_fde_high=0
+bash scripts/reproducibility/run_metrics.sh \
+  /path/to/restored_images \
+  /path/to/gt_images \
+  /path/to/metrics_log_dir
 ```
 
-## Evaluation
+## Reproducibility notes
 
-```bash
-python test_metrics.py \
-    --inp_imgs preset/datasets/benchmark_realsr/results_fde_sr \
-    --gt_imgs preset/datasets/benchmark_realsr/test_HR \
-    --log preset/datasets/benchmark_realsr/results_fde_sr/metrics
-```
+- The direct OSEDiff-style one-step baseline and ReF-WRD are evaluated under the same local protocol described in the manuscript.
+- The cross-dataset residual-strength sweep is a post-hoc sensitivity analysis after fixing the main operating point and is not used for model selection or test-set parameter tuning.
+- Stage-II residual correction does not run an additional diffusion reverse sampling trajectory.
 
 ## License
 
-See [LICENCE](LICENCE).
+This repository is released under the MIT License. See [LICENSE](LICENSE).

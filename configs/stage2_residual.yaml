@@ -1,0 +1,32 @@
+stage: stage2_residual_correction
+entry: train_fde_sr.py
+seed: 42
+resume_from: preset/models/refwrd_stage1_base.pkl
+
+optimization:
+  learning_rate: 1.0e-4
+  train_batch_size: 4
+  gradient_accumulation_steps: 1
+  mixed_precision: fp16
+  checkpointing_steps: 500
+
+loss:
+  lambda_l2: 1.0
+  lambda_lpips: 2.0
+  lambda_fde_wavelet: 0.75
+  lambda_fde_residual: 0.5
+  lambda_fde_high: 0.15
+
+module:
+  fde_hidden_dim: 128
+  fde_prompt_hidden_dim: 256
+  fde_num_blocks: 6
+  fde_residual_scale: 0.25
+
+degradation:
+  config: dataloaders/params_realesrgan.yml
+
+notes:
+  - "Stage-II trains the residual correction branch around the Stage-I base."
+  - "It does not introduce an additional diffusion reverse sampling trajectory."
+

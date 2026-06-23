@@ -1,3 +1,4 @@
+﻿> Naming note: `FDE_SR` is the internal development name retained by several code files. It corresponds to the ReF-WRD method described in the manuscript.
 # FDE_SR Implementation Notes
 
 This note documents the FDE_SR code path in this repository. FDE_SR is organized
@@ -92,3 +93,4 @@ Intermediate outputs:
 --lambda_fde_residual=0
 --lambda_fde_high=0
 ```
+

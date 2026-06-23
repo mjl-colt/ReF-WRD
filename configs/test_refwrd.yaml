@@ -1,0 +1,29 @@
+stage: inference
+entry: test_fde_sr.py
+
+inference:
+  eta: 0.5
+  save_intermediate: true
+
+outputs:
+  final: output_dir
+  base: output_dir/base
+  residual: output_dir/residual
+
+metrics:
+  entry: test_metrics.py
+  paired_metrics:
+    - PSNR
+    - SSIM
+    - LPIPS
+    - DISTS
+  no_reference_metrics:
+    - NIQE
+    - MUSIQ
+    - MANIQA
+    - CLIPIQA
+
+notes:
+  - "eta=0.5 is the fixed main operating point selected on the held-out validation set."
+  - "Benchmark sweeps over eta are post-hoc sensitivity analyses, not test-set tuning."
+

@@ -1,0 +1,26 @@
+stage: stage1_base
+entry: train_fde_sr_base.py
+seed: 42
+hardware: "single NVIDIA GeForce RTX 4090 for reported local setup"
+
+optimization:
+  learning_rate: 5.0e-5
+  train_batch_size: 4
+  gradient_accumulation_steps: 1
+  mixed_precision: fp16
+  checkpointing_steps: 500
+  lora_rank: 4
+
+loss:
+  lambda_l2: 1.0
+  lambda_lpips: 2.0
+  lambda_vsd: 1.0
+  lambda_vsd_lora: 1.0
+
+degradation:
+  config: dataloaders/params_realesrgan.yml
+
+notes:
+  - "Stage-I follows the OSEDiff-style one-step base restoration paradigm."
+  - "Use held-out validation data for checkpoint selection; do not use test benchmarks."
+

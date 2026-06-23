@@ -1,0 +1,20 @@
+# Example local paths for ReF-WRD.
+# Copy this file to paths.yaml and edit paths for your machine.
+
+sd21base_path: /path/to/stable-diffusion-2-1-base
+ram_path: /path/to/ram_swin_large_14m.pth
+dape_path: /path/to/dape_or_ram_ft_checkpoint.pth
+
+train_txt: data/lists/lsdir_train.txt
+ffhq_txt: data/lists/ffhq_first10k.txt
+
+refwrd_base_ckpt: preset/models/refwrd_stage1_base.pkl
+refwrd_ckpt: preset/models/refwrd_stage2.pkl
+
+div2k_lq: data/benchmarks/DIV2K-Val/LQ
+div2k_hr: data/benchmarks/DIV2K-Val/HR
+drealsr_lq: data/benchmarks/DRealSR/LQ
+drealsr_hr: data/benchmarks/DRealSR/HR
+realsr_lq: data/benchmarks/RealSR/LQ
+realsr_hr: data/benchmarks/RealSR/HR
+
