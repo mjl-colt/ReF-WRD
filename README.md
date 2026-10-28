@@ -1,52 +1,47 @@
-﻿# ReF-WRD: Reliability-Aware Frequency Conditioning and Wavelet-Guided Residual Diffusion
+# ReF-WRD: Reliability-Aware Frequency Conditioning and Wavelet-Guided Residual Denoising
 
-This repository provides the core implementation and main evaluation protocol for **ReF-WRD**, the method described in the manuscript:
+This repository provides the core implementation and evaluation protocol for
+**ReF-WRD**, a two-stage real-world image super-resolution method. Stage I uses
+frequency-decoupled prompt learning (FDPL) for one-step latent restoration.
+Stage II applies one adaptive wavelet-modulated correction around the frozen
+Stage-I latent; it does not start another diffusion reverse trajectory.
 
-> Reliability-Aware Frequency Conditioning and Wavelet-Guided Residual Diffusion for Real-World Image Super-Resolution
-
-The code base retains several internal file names using `fde_sr` from an earlier development stage. These files implement the ReF-WRD model components described in the manuscript. The naming mapping is:
-
-```text
-fde_sr.py                         ReF-WRD generator and inference wrapper
-fde_sr_core.py                    OSEDiff-style one-step latent restoration backbone
-models/fde_sr_modules.py          FDPL, residual correction, A-WRM, and losses
-train_fde_sr_base.py              Stage-I base restoration training
-train_fde_sr.py                   full / Stage-II residual-correction training entry
-test_fde_sr.py                    ReF-WRD inference entry
-test_metrics.py                   metric evaluation entry
-```
+The code retains several `fde_sr` filenames from an earlier development stage.
+They now resolve to the paper-aligned ReF-WRD implementation.
 
 ## Main components
 
-- **FDPL**: frequency-decoupled prompt learning with reliability gating.
-- **Stage-I base restoration**: OSEDiff-style one-step latent restoration from the low-quality latent.
-- **Stage-II residual correction / RC**: scale-controlled residual correction around the frozen Stage-I base. This branch does not introduce an additional diffusion reverse sampling trajectory.
-- **A-WRM**: adaptive wavelet residual modulation in latent space.
-- **WCS**: image-domain wavelet consistency supervision.
+- **FDPL**: Gaussian low/high separation, independent CNN/token adapters, and
+  token-wise reliability gating.
+- **Stage-I base restoration**: OSEDiff-style one-step latent restoration from
+  the low-quality latent.
+- **Stage-II latent correction**: a single scale-controlled residual around
+  detached Stage-I latent and condition tensors.
+- **A-WRM**: non-decimated Haar SWT, dedicated LL/HF processing, and
+  channel-wise LL/LH/HL/HH gates without spatial downsampling.
+- **WCS**: high-frequency subbands are matched to the target, while the
+  low-frequency subband is anchored to the detached Stage-I output.
+
+Stage II is optimized with image L1, LPIPS, WCS, and an L1 latent-residual
+magnitude penalty.
 
 ## Repository layout
 
 ```text
-README.md                         main project overview
+fde_sr.py                         generator and inference implementation
+ref_wrd.py                        canonical paper-named import aliases
+fde_sr_core.py                    one-step latent restoration backbone
+models/ref_wrd_modules.py         FDPL, latent correction, A-WRM, and WCS
+models/fde_sr_modules.py          compatibility exports for old imports
+train_fde_sr.py                   paper-aligned Stage-I/Stage-II training entry
+test_fde_sr.py                    ReF-WRD inference entry
+test_fde_sr_modules.py            lightweight component tests
 REPRODUCIBILITY.md                training, inference, metrics, and seed protocol
 DATASETS.md                       dataset layout and list-file preparation
 MODEL_ZOO.md                      external assets and checkpoint information
-requirements.txt                  Python package requirements
 configs/                          example protocol/configuration files
 scripts/reproducibility/          documented reproduction scripts
 checkpoints/README.md             checkpoint placement notes
-```
-
-Core code:
-
-```text
-fde_sr.py
-fde_sr_core.py
-models/fde_sr_modules.py
-train_fde_sr_base.py
-train_fde_sr.py
-test_fde_sr.py
-test_metrics.py
 ```
 
 ## Installation
@@ -60,18 +55,19 @@ pip install -r requirements.txt
 
 Required external assets:
 
-- Stable Diffusion 2.1 base directory for VAE, tokenizer, text encoder, scheduler, and UNet.
+- Stable Diffusion 2.1 base directory for VAE, tokenizer, text encoder,
+  scheduler, and UNet.
 - RAM checkpoint.
 - DAPE/RAM fine-tuned checkpoint for degradation-aware prompts.
-- ReF-WRD checkpoint for inference, or a Stage-I base checkpoint for Stage-II training.
+- ReF-WRD checkpoint for inference, or a Stage-I checkpoint for Stage-II
+  training.
 
 See `MODEL_ZOO.md` for checkpoint and asset notes.
 
 ## Dataset preparation
 
-Benchmark datasets are not redistributed. Obtain LSDIR, FFHQ, DIV2K-Val, RealSR, and DRealSR from their original providers.
-
-Generate training list files:
+Benchmark datasets are not redistributed. Obtain LSDIR, FFHQ, DIV2K-Val,
+RealSR, and DRealSR from their original providers.
 
 ```bash
 bash scripts/reproducibility/prepare_data.sh \
@@ -82,7 +78,32 @@ bash scripts/reproducibility/prepare_data.sh \
 
 See `DATASETS.md` for the expected directory layout.
 
-## Quick inference
+## Training
+
+Stage I trains the one-step restoration adapters and FDPL while the latent
+corrector remains frozen:
+
+```bash
+export SD21BASE_PATH=/path/to/stable-diffusion-2-1-base
+export RAM_PATH=/path/to/ram_swin_large_14m.pth
+export TRAIN_TXT=data/lists/lsdir_train.txt
+export FFHQ_TXT=data/lists/ffhq_first10k.txt
+export SEED=42
+bash scripts/reproducibility/run_stage1_base.sh
+```
+
+Stage II freezes Stage I and FDPL and trains only the latent corrector:
+
+```bash
+export REFWRD_BASE_CKPT=/path/to/refwrd_stage1.pkl
+export SEED=42
+bash scripts/reproducibility/run_stage2_residual.sh
+```
+
+Repeat the documented protocol with seeds `42`, `123`, and `2026` for
+repeated-run reporting.
+
+## Inference
 
 ```bash
 export SD21BASE_PATH=/path/to/stable-diffusion-2-1-base
@@ -95,30 +116,8 @@ bash scripts/reproducibility/run_test_refwrd.sh \
   /path/to/output_dir
 ```
 
-The main evaluation uses the fixed residual strength documented in the manuscript. In the public scripts this value is passed through `--fde_residual_scale`.
-
-## Training
-
-Stage-I base restoration:
-
-```bash
-export SD21BASE_PATH=/path/to/stable-diffusion-2-1-base
-export RAM_PATH=/path/to/ram_swin_large_14m.pth
-export TRAIN_TXT=data/lists/lsdir_train.txt
-export FFHQ_TXT=data/lists/ffhq_first10k.txt
-export SEED=42
-bash scripts/reproducibility/run_stage1_base.sh
-```
-
-Stage-II residual correction:
-
-```bash
-export REFWRD_BASE_CKPT=/path/to/refwrd_stage1_base.pkl
-export SEED=42
-bash scripts/reproducibility/run_stage2_residual.sh
-```
-
-Repeat the documented training protocol with seeds `42`, `123`, and `2026` for repeated-run reporting.
+`--save_intermediate` writes the Stage-I base image and a visualization of the
+decoded latent correction. `--disable_stage2` provides the Stage-I ablation.
 
 ## Metrics
 
@@ -131,9 +130,14 @@ bash scripts/reproducibility/run_metrics.sh \
 
 ## Reproducibility notes
 
-- The direct OSEDiff-style one-step baseline and ReF-WRD are evaluated under the same local protocol described in the manuscript.
-- The cross-dataset residual-strength sweep is a post-hoc sensitivity analysis after fixing the main operating point and is not used for model selection or test-set parameter tuning.
-- Stage-II residual correction does not run an additional diffusion reverse sampling trajectory.
+- The direct OSEDiff-style one-step baseline and ReF-WRD use the same local
+  evaluation protocol described in the manuscript.
+- Residual strength is selected on held-out validation data. Cross-dataset
+  sweeps are post-hoc sensitivity analyses, not test-set tuning.
+- Stage-II correction does not run an additional diffusion reverse sampling
+  trajectory.
+- Old `fde_prompt`/`fde_stage2` checkpoint keys are accepted during non-strict
+  loading; mismatched prototype tensors are skipped by shape.
 
 ## License
 

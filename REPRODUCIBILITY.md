@@ -52,7 +52,7 @@ data/lists/lsdir_train.txt
 data/lists/ffhq_first10k.txt
 ```
 
-## 4. Stage-I base restoration training
+## 4. Stage-I base restoration and FDPL training
 
 ```bash
 export TRAIN_TXT=data/lists/lsdir_train.txt
@@ -62,6 +62,7 @@ bash scripts/reproducibility/run_stage1_base.sh
 ```
 
 Repeat with seeds `42`, `123`, and `2026` for repeated-run reporting.
+The Stage-II latent corrector remains frozen in this phase.
 
 ## 5. Stage-II residual correction training
 
@@ -73,8 +74,9 @@ export SEED=42
 bash scripts/reproducibility/run_stage2_residual.sh
 ```
 
-Stage-II trains the residual correction branch around the Stage-I base. It does
-not introduce an additional diffusion reverse sampling trajectory.
+Stage II freezes the Stage-I restoration path and FDPL, and trains only the
+latent residual corrector. It does not introduce an additional diffusion
+reverse sampling trajectory.
 
 ## 6. Inference
 
@@ -85,7 +87,12 @@ bash scripts/reproducibility/run_test_refwrd.sh \
   outputs/refwrd/benchmark_name
 ```
 
-The main evaluation uses the fixed residual strength documented in the manuscript. In this code release, the corresponding inference argument is `--fde_residual_scale` and the reproducibility script sets `FDE_RESIDUAL_SCALE=0.25` by default. The cross-dataset residual-strength sweeps in the manuscript are post-hoc sensitivity analyses and are not used for model selection or test-set parameter tuning.
+The main evaluation uses the fixed residual strength documented in the
+manuscript. The corresponding inference argument is `--fde_residual_scale`, and
+the reproducibility script sets `FDE_RESIDUAL_SCALE=0.5` by default. The
+cross-dataset residual-strength sweeps in the manuscript are post-hoc
+sensitivity analyses and are not used for model selection or test-set parameter
+tuning.
 
 ## 7. Metrics
 

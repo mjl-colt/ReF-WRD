@@ -15,7 +15,7 @@ CUDA_VISIBLE_DEVICES="${CUDA_DEVICES}" accelerate launch train_fde_sr.py \
   --pretrained_model_name_or_path="${SD21BASE_PATH}" \
   --ram_path="${RAM_PATH}" \
   --resume_fde_sr_path="${REFWRD_BASE_CKPT}" \
-  --train_stage2_only \
+  --training_stage=stage2 \
   --learning_rate=1e-4 \
   --train_batch_size=4 \
   --gradient_accumulation_steps=1 \
@@ -28,15 +28,20 @@ CUDA_VISIBLE_DEVICES="${CUDA_DEVICES}" accelerate launch train_fde_sr.py \
   --dataset_txt_paths_list "${TRAIN_TXT}","${FFHQ_TXT}" \
   --dataset_prob_paths_list 1,1 \
   --neg_prompt="painting, oil painting, illustration, drawing, art, sketch, cartoon, CG Style, 3D render, unreal engine, blurring, dirty, messy, worst quality, low quality, frames, watermark, signature, jpeg artifacts, deformed, lowres, over-smooth" \
-  --lambda_lpips=2 \
-  --lambda_l2=1 \
-  --lambda_fde_wavelet=0.75 \
+  --lambda_stage2_rec=1.0 \
+  --lambda_stage2_lpips=0.2 \
+  --lambda_fde_wavelet=1.0 \
   --lambda_fde_residual=0.5 \
-  --lambda_fde_high=0.15 \
+  --lambda_fde_high=0.0 \
+  --wavelet_ll_weight=0.2 \
+  --wavelet_high_weight=1.0 \
   --fde_hidden_dim=128 \
   --fde_prompt_hidden_dim=256 \
+  --fde_num_tokens=77 \
+  --fde_token_rank=16 \
+  --fde_latent_channels=4 \
   --fde_num_blocks=6 \
-  --fde_residual_scale=0.25 \
+  --fde_residual_scale=0.5 \
   --deg_file_path="dataloaders/params_realesrgan.yml" \
   --tracker_project_name "train_refwrd_stage2"
 

@@ -1,5 +1,6 @@
 stage: stage1_base
-entry: train_fde_sr_base.py
+entry: train_fde_sr.py
+training_stage: stage1
 seed: 42
 hardware: "single NVIDIA GeForce RTX 4090 for reported local setup"
 
@@ -21,6 +22,7 @@ degradation:
   config: dataloaders/params_realesrgan.yml
 
 notes:
-  - "Stage-I follows the OSEDiff-style one-step base restoration paradigm."
+  - "Stage-I jointly trains the OSEDiff-style restoration adapters and FDPL."
+  - "The Stage-II latent corrector remains frozen."
   - "Use held-out validation data for checkpoint selection; do not use test benchmarks."
 

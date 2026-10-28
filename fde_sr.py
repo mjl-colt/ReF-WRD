@@ -7,7 +7,10 @@ import torch
 sys.path.append(os.getcwd())
 
 from fde_sr_core import FDE_SRBaseGenerator, FDE_SRBaseInference, FDE_SRRegularizer
-from models.fde_sr_modules import FrequencyDecoupledPromptLearner, StageIIResidualCorrector
+from models.ref_wrd_modules import (
+    FrequencyDecoupledPromptLearner,
+    LatentResidualCorrector,
+)
 
 
 def _arg(args: Any, name: str, default: Any) -> Any:
@@ -15,13 +18,38 @@ def _arg(args: Any, name: str, default: Any) -> Any:
 
 
 def _is_fde_sr_checkpoint(ckpt: Dict[str, Any]) -> bool:
-    return isinstance(ckpt, dict) and ("fde_prompt" in ckpt or "fde_stage2" in ckpt)
+    return isinstance(ckpt, dict) and any(
+        key in ckpt
+        for key in (
+            "ref_wrd_prompt",
+            "ref_wrd_stage2",
+            "fde_prompt",
+            "fde_stage2",
+        )
+    )
 
 
 def _extract_base_state(ckpt: Dict[str, Any]) -> Dict[str, Any]:
     if isinstance(ckpt, dict) and "base" in ckpt:
         return ckpt["base"]
     return ckpt
+
+
+def _load_compatible_state(
+    module: torch.nn.Module,
+    state: Dict[str, torch.Tensor],
+    strict: bool,
+):
+    """Load new checkpoints strictly and old prototypes by matching shape."""
+    if strict:
+        return module.load_state_dict(state, strict=True)
+    current = module.state_dict()
+    compatible = {
+        key: value
+        for key, value in state.items()
+        if key in current and current[key].shape == value.shape
+    }
+    return module.load_state_dict(compatible, strict=False)
 
 
 class FDE_SRMixin:
@@ -31,19 +59,28 @@ class FDE_SRMixin:
         hidden_dim = _arg(args, "fde_hidden_dim", 128)
         prompt_hidden_dim = _arg(args, "fde_prompt_hidden_dim", 256)
         prompt_dropout = _arg(args, "fde_prompt_dropout", 0.0)
-        prompt_init_scale = _arg(args, "fde_prompt_init_scale", 0.01)
+        prompt_init_scale = _arg(args, "fde_prompt_init_scale", 0.1)
+        num_tokens = _arg(args, "fde_num_tokens", 77)
+        token_rank = _arg(args, "fde_token_rank", 16)
+        gaussian_kernel_size = _arg(args, "fde_gaussian_kernel_size", 5)
+        gaussian_sigma = _arg(args, "fde_gaussian_sigma", 1.0)
         num_blocks = _arg(args, "fde_num_blocks", 6)
-        residual_scale = _arg(args, "fde_residual_scale", 0.25)
+        residual_scale = _arg(args, "fde_residual_scale", 0.5)
+        latent_channels = _arg(args, "fde_latent_channels", 4)
 
         self.fde_prompt = FrequencyDecoupledPromptLearner(
             clip_dim=clip_dim,
             image_channels=image_channels,
             hidden_dim=prompt_hidden_dim,
+            num_tokens=num_tokens,
+            token_rank=token_rank,
             dropout=prompt_dropout,
             init_scale=prompt_init_scale,
+            gaussian_kernel_size=gaussian_kernel_size,
+            gaussian_sigma=gaussian_sigma,
         )
-        self.fde_stage2 = StageIIResidualCorrector(
-            image_channels=image_channels,
+        self.fde_stage2 = LatentResidualCorrector(
+            latent_channels=latent_channels,
             hidden_dim=hidden_dim,
             num_blocks=num_blocks,
             prompt_dim=clip_dim,
@@ -62,13 +99,17 @@ class FDE_SRMixin:
         if not ckpt or not _is_fde_sr_checkpoint(ckpt):
             print("[FDE_SR] No FDE stage weights found; using randomly initialized FDE modules.")
             return
-        missing_prompt, unexpected_prompt = self.fde_prompt.load_state_dict(
-            ckpt.get("fde_prompt", {}),
-            strict=strict,
+        prompt_state = ckpt.get("ref_wrd_prompt", ckpt.get("fde_prompt", {}))
+        stage2_state = ckpt.get("ref_wrd_stage2", ckpt.get("fde_stage2", {}))
+        missing_prompt, unexpected_prompt = _load_compatible_state(
+            self.fde_prompt,
+            prompt_state,
+            strict,
         )
-        missing_stage2, unexpected_stage2 = self.fde_stage2.load_state_dict(
-            ckpt.get("fde_stage2", {}),
-            strict=strict,
+        missing_stage2, unexpected_stage2 = _load_compatible_state(
+            self.fde_stage2,
+            stage2_state,
+            strict,
         )
         if missing_prompt or unexpected_prompt or missing_stage2 or unexpected_stage2:
             print(
@@ -78,17 +119,24 @@ class FDE_SRMixin:
             )
 
     def fde_trainable_parameters(self):
-        for module in (self.fde_prompt, self.fde_stage2):
+        modules = (
+            (self.fde_stage2,)
+            if self._training_stage() == "stage2"
+            else (self.fde_prompt,)
+        )
+        for module in modules:
             for param in module.parameters():
                 if param.requires_grad:
                     yield param
 
-    def _prompt_context(self, prompt_embeds: torch.Tensor) -> torch.Tensor:
-        return prompt_embeds.float().mean(dim=1)
+    def _training_stage(self) -> str:
+        if _arg(self.args, "train_stage2_only", False):
+            return "stage2"
+        return _arg(self.args, "training_stage", "stage1")
 
 
 class FDE_SR_gen(FDE_SRMixin, FDE_SRBaseGenerator):
-    """FDE_SR generator with frequency-decoupled prompt and residual modules."""
+    """Paper-aligned ReF-WRD generator (legacy FDE_SR entry point)."""
 
     def __init__(self, args):
         super().__init__(args)
@@ -97,14 +145,22 @@ class FDE_SR_gen(FDE_SRMixin, FDE_SRBaseGenerator):
 
     def set_train(self):
         super().set_train()
-        self.fde_prompt.train()
-        self.fde_stage2.train()
-        self.fde_prompt.requires_grad_(True)
-        self.fde_stage2.requires_grad_(True)
-
-        if _arg(self.args, "train_stage2_only", False):
+        if self._training_stage() == "stage2":
+            # Stage II is deliberately trained around a fixed Stage-I latent
+            # and a fixed frequency-decoupled condition.
+            self.unet.eval()
+            self.vae.eval()
             self.unet.requires_grad_(False)
             self.vae.requires_grad_(False)
+            self.fde_prompt.eval()
+            self.fde_prompt.requires_grad_(False)
+            self.fde_stage2.train()
+            self.fde_stage2.requires_grad_(True)
+        else:
+            self.fde_prompt.train()
+            self.fde_prompt.requires_grad_(True)
+            self.fde_stage2.eval()
+            self.fde_stage2.requires_grad_(False)
 
     def _collect_base_state(self) -> Dict[str, Any]:
         return {
@@ -128,16 +184,29 @@ class FDE_SR_gen(FDE_SRMixin, FDE_SRBaseGenerator):
 
     def save_model(self, outf: str):
         sd = {
-            "format": "fde_sr_v1",
+            "format": "ref_wrd_v2",
             "base": self._collect_base_state(),
-            "fde_prompt": {k: v.detach().cpu() for k, v in self.fde_prompt.state_dict().items()},
-            "fde_stage2": {k: v.detach().cpu() for k, v in self.fde_stage2.state_dict().items()},
+            "ref_wrd_prompt": {
+                k: v.detach().cpu()
+                for k, v in self.fde_prompt.state_dict().items()
+            },
+            "ref_wrd_stage2": {
+                k: v.detach().cpu()
+                for k, v in self.fde_stage2.state_dict().items()
+            },
             "fde_config": {
                 "fde_clip_dim": _arg(self.args, "fde_clip_dim", 1024),
                 "fde_hidden_dim": _arg(self.args, "fde_hidden_dim", 128),
                 "fde_prompt_hidden_dim": _arg(self.args, "fde_prompt_hidden_dim", 256),
+                "fde_num_tokens": _arg(self.args, "fde_num_tokens", 77),
+                "fde_token_rank": _arg(self.args, "fde_token_rank", 16),
+                "fde_latent_channels": _arg(self.args, "fde_latent_channels", 4),
+                "fde_gaussian_kernel_size": _arg(
+                    self.args, "fde_gaussian_kernel_size", 5
+                ),
+                "fde_gaussian_sigma": _arg(self.args, "fde_gaussian_sigma", 1.0),
                 "fde_num_blocks": _arg(self.args, "fde_num_blocks", 6),
-                "fde_residual_scale": _arg(self.args, "fde_residual_scale", 0.25),
+                "fde_residual_scale": _arg(self.args, "fde_residual_scale", 0.5),
             },
         }
         torch.save(sd, outf)
@@ -165,47 +234,68 @@ class FDE_SR_gen(FDE_SRMixin, FDE_SRBaseGenerator):
         self._load_fde_state(ckpt, strict=strict)
 
     def forward(self, c_t, batch=None, args=None):
-        encoded_control = self.vae.encode(c_t).latent_dist.sample() * self.vae.config.scaling_factor
-
-        prompt_embeds = self.encode_prompt(batch["prompt"])
-        neg_prompt_embeds = self.encode_prompt(batch["neg_prompt"])
-        prompt_embeds, prompt_aux = self.fde_prompt(prompt_embeds, c_t)
-
-        model_pred = self.unet(
-            encoded_control,
-            self.timesteps,
-            encoder_hidden_states=prompt_embeds.to(torch.float32),
-        ).sample
-        x_denoised = self.noise_scheduler.step(
-            model_pred,
-            self.timesteps,
-            encoded_control,
-            return_dict=True,
-        ).prev_sample
-        base_image = (self.vae.decode(x_denoised / self.vae.config.scaling_factor).sample).clamp(-1, 1)
-
-        if _arg(self.args, "disable_stage2", False):
-            output_image = base_image
-            residual = torch.zeros_like(base_image)
-            stage_aux = {}
-        else:
-            output_image, residual, stage_aux = self.fde_stage2(
-                c_t,
-                base_image,
-                prompt_context=self._prompt_context(prompt_embeds),
+        stage2_training = self._training_stage() == "stage2"
+        base_context = torch.no_grad() if stage2_training else torch.enable_grad()
+        with base_context:
+            encoded_control = (
+                self.vae.encode(c_t).latent_dist.sample()
+                * self.vae.config.scaling_factor
             )
+            text_prompt = self.encode_prompt(batch["prompt"])
+            neg_prompt_embeds = self.encode_prompt(batch["neg_prompt"])
+            prompt_embeds, prompt_aux = self.fde_prompt(text_prompt, c_t)
+            model_pred = self.unet(
+                encoded_control,
+                self.timesteps,
+                encoder_hidden_states=prompt_embeds.to(torch.float32),
+            ).sample
+            base_latent = self.noise_scheduler.step(
+                model_pred,
+                self.timesteps,
+                encoded_control,
+                return_dict=True,
+            ).prev_sample
+            base_image = self.vae.decode(
+                base_latent / self.vae.config.scaling_factor
+            ).sample.clamp(-1, 1)
+
+        use_stage2 = stage2_training and not _arg(
+            self.args, "disable_stage2", False
+        )
+        if not use_stage2:
+            output_image = base_image
+            corrected_latent = base_latent
+            latent_residual = torch.zeros_like(base_latent)
+            stage_aux = {
+                "ref_wrd_latent_residual": latent_residual,
+            }
+        else:
+            corrected_latent, latent_residual, stage_aux = self.fde_stage2(
+                base_latent,
+                prompt_embeds,
+                detach_inputs=True,
+            )
+            output_image = self.vae.decode(
+                corrected_latent / self.vae.config.scaling_factor
+            ).sample.clamp(-1, 1)
 
         aux = {
             "base_output": base_image,
-            "fde_residual": residual,
+            "ref_wrd_base_latent": base_latent.detach(),
+            "ref_wrd_corrected_latent": corrected_latent,
+            "ref_wrd_latent_residual": latent_residual,
+            "ref_wrd_residual_image": output_image - base_image,
+            # Legacy visualization key stays image-shaped.
+            "fde_residual": output_image - base_image,
         }
         aux.update(prompt_aux)
         aux.update(stage_aux)
-        return output_image, x_denoised, prompt_embeds, neg_prompt_embeds, aux
+        aux["fde_residual"] = output_image - base_image
+        return output_image, base_latent, prompt_embeds, neg_prompt_embeds, aux
 
 
 class FDE_SR_test(FDE_SRMixin, FDE_SRBaseInference):
-    """FDE_SR inference module."""
+    """ReF-WRD inference module (legacy FDE_SR entry point)."""
 
     def __init__(self, args):
         self._pending_fde_sr_checkpoint = None
@@ -285,8 +375,8 @@ class FDE_SR_test(FDE_SRMixin, FDE_SRBaseInference):
 
     @torch.no_grad()
     def forward(self, lq, prompt, return_base: bool = False):
-        prompt_embeds = self.encode_prompt([prompt])
-        prompt_embeds, _ = self.fde_prompt(prompt_embeds, lq)
+        text_prompt = self.encode_prompt([prompt])
+        prompt_embeds, prompt_aux = self.fde_prompt(text_prompt, lq)
 
         lq_latent = self.vae.encode(lq.to(self.weight_dtype)).latent_dist.sample() * self.vae.config.scaling_factor
         model_pred = self._predict_noise_tiled(lq_latent, prompt_embeds)
@@ -296,14 +386,35 @@ class FDE_SR_test(FDE_SRMixin, FDE_SRBaseInference):
             lq_latent,
             return_dict=True,
         ).prev_sample
-        base_image = (self.vae.decode(x_denoised.to(self.weight_dtype) / self.vae.config.scaling_factor).sample).clamp(-1, 1)
-        output_image, residual, aux = self.fde_stage2(
-            lq,
-            base_image,
-            prompt_context=self._prompt_context(prompt_embeds),
+        base_image = self.vae.decode(
+            x_denoised.to(self.weight_dtype) / self.vae.config.scaling_factor
+        ).sample.clamp(-1, 1)
+        if _arg(self.args, "disable_stage2", False):
+            corrected_latent = x_denoised
+            latent_residual = torch.zeros_like(x_denoised)
+            output_image = base_image
+            aux = {}
+        else:
+            corrected_latent, latent_residual, aux = self.fde_stage2(
+                x_denoised,
+                prompt_embeds,
+                detach_inputs=True,
+            )
+            output_image = self.vae.decode(
+                corrected_latent.to(self.weight_dtype)
+                / self.vae.config.scaling_factor
+            ).sample.clamp(-1, 1)
+        aux.update(prompt_aux)
+        aux.update(
+            {
+                "base_output": base_image,
+                "ref_wrd_base_latent": x_denoised,
+                "ref_wrd_corrected_latent": corrected_latent,
+                "ref_wrd_latent_residual": latent_residual,
+                "ref_wrd_residual_image": output_image - base_image,
+                "fde_residual": output_image - base_image,
+            }
         )
-        aux["base_output"] = base_image
-        aux["fde_residual"] = residual
         if return_base:
             return output_image, base_image, aux
         return output_image
@@ -322,6 +433,14 @@ __all__ = [
     "FDE_SR_inference_time",
     "FDE_SR_reg",
     "FDE_SR_test",
+    "ReF_WRD_gen",
+    "ReF_WRD_inference_time",
+    "ReF_WRD_reg",
+    "ReF_WRD_test",
 ]
 
 FDE_SR_reg = FDE_SRRegularizer
+ReF_WRD_gen = FDE_SR_gen
+ReF_WRD_test = FDE_SR_test
+ReF_WRD_inference_time = FDE_SR_inference_time
+ReF_WRD_reg = FDE_SRRegularizer

@@ -74,7 +74,7 @@ def parse_args():
     parser.add_argument("--process_size", type=int, default=512)
     parser.add_argument("--upscale", type=int, default=4)
     parser.add_argument("--align_method", type=str, choices=["wavelet", "adain", "nofix"], default="adain")
-    parser.add_argument("--fde_sr_path", type=str, default="preset/models/fde_sr.pkl")
+    parser.add_argument("--fde_sr_path", type=str, default="preset/models/ref_wrd.pkl")
     parser.add_argument("--prompt", type=str, default="")
     parser.add_argument("--ram_path", type=str, default=None)
     parser.add_argument("--ram_ft_path", type=str, default=None)
@@ -93,9 +93,15 @@ def parse_args():
     parser.add_argument("--fde_hidden_dim", default=128, type=int)
     parser.add_argument("--fde_prompt_hidden_dim", default=256, type=int)
     parser.add_argument("--fde_prompt_dropout", default=0.0, type=float)
-    parser.add_argument("--fde_prompt_init_scale", default=0.01, type=float)
+    parser.add_argument("--fde_prompt_init_scale", default=0.1, type=float)
+    parser.add_argument("--fde_num_tokens", default=77, type=int)
+    parser.add_argument("--fde_token_rank", default=16, type=int)
+    parser.add_argument("--fde_gaussian_kernel_size", default=5, type=int)
+    parser.add_argument("--fde_gaussian_sigma", default=1.0, type=float)
+    parser.add_argument("--fde_latent_channels", default=4, type=int)
     parser.add_argument("--fde_num_blocks", default=6, type=int)
-    parser.add_argument("--fde_residual_scale", default=0.25, type=float)
+    parser.add_argument("--fde_residual_scale", default=0.5, type=float)
+    parser.add_argument("--disable_stage2", action="store_true")
     parser.add_argument("--fde_strict_load", action="store_true")
     return parser.parse_args()
 
@@ -170,7 +176,7 @@ if __name__ == "__main__":
 
             if args.save_intermediate and base_image is not None and aux is not None:
                 base_pil = transforms.ToPILImage()(base_image[0].cpu() * 0.5 + 0.5)
-                residual_pil = residual_to_pil(aux["fde_residual"])
+                residual_pil = residual_to_pil(aux["ref_wrd_residual_image"])
                 base_pil.save(os.path.join(base_path, bname))
                 residual_pil.save(os.path.join(residual_path, bname))
 

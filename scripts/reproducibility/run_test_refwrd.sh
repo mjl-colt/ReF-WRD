@@ -13,7 +13,7 @@ fi
 
 INPUT_DIR="$1"
 OUTPUT_DIR="$2"
-FDE_RESIDUAL_SCALE="${FDE_RESIDUAL_SCALE:-0.25}"
+FDE_RESIDUAL_SCALE="${FDE_RESIDUAL_SCALE:-0.5}"
 
 python test_fde_sr.py \
   -i "${INPUT_DIR}" \

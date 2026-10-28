@@ -17,7 +17,7 @@ from tqdm.auto import tqdm
 
 from dataloaders.realsr_dataset import PairedSROnlineTxtDataset
 from fde_sr import FDE_SR_gen, FDE_SR_reg
-from models.fde_sr_modules import FDE_SRLoss
+from models.ref_wrd_modules import ReFWRDLoss
 
 
 def parse_float_list(arg):
@@ -95,10 +95,12 @@ def parse_args(input_args=None):
     parser.add_argument("--lambda_lpips", default=2.0, type=float)
     parser.add_argument("--lambda_vsd", default=1.0, type=float)
     parser.add_argument("--lambda_vsd_lora", default=1.0, type=float)
-    parser.add_argument("--lambda_fde_wavelet", default=0.5, type=float)
-    parser.add_argument("--lambda_fde_residual", default=0.25, type=float)
-    parser.add_argument("--lambda_fde_high", default=0.1, type=float)
-    parser.add_argument("--wavelet_ll_weight", default=0.25, type=float)
+    parser.add_argument("--lambda_fde_wavelet", default=1.0, type=float)
+    parser.add_argument("--lambda_fde_residual", default=0.5, type=float)
+    parser.add_argument("--lambda_fde_high", default=0.0, type=float)
+    parser.add_argument("--lambda_stage2_rec", default=1.0, type=float)
+    parser.add_argument("--lambda_stage2_lpips", default=0.2, type=float)
+    parser.add_argument("--wavelet_ll_weight", default=0.2, type=float)
     parser.add_argument("--wavelet_high_weight", default=1.0, type=float)
     parser.add_argument("--neg_prompt", default="", type=str)
     parser.add_argument("--cfg_vsd", default=7.5, type=float)
@@ -111,20 +113,32 @@ def parse_args(input_args=None):
     parser.add_argument("--fde_hidden_dim", default=128, type=int)
     parser.add_argument("--fde_prompt_hidden_dim", default=256, type=int)
     parser.add_argument("--fde_prompt_dropout", default=0.0, type=float)
-    parser.add_argument("--fde_prompt_init_scale", default=0.01, type=float)
+    parser.add_argument("--fde_prompt_init_scale", default=0.1, type=float)
+    parser.add_argument("--fde_num_tokens", default=77, type=int)
+    parser.add_argument("--fde_token_rank", default=16, type=int)
+    parser.add_argument("--fde_gaussian_kernel_size", default=5, type=int)
+    parser.add_argument("--fde_gaussian_sigma", default=1.0, type=float)
+    parser.add_argument("--fde_latent_channels", default=4, type=int)
     parser.add_argument("--fde_num_blocks", default=6, type=int)
-    parser.add_argument("--fde_residual_scale", default=0.25, type=float)
+    parser.add_argument("--fde_residual_scale", default=0.5, type=float)
+    parser.add_argument(
+        "--training_stage",
+        choices=["stage1", "stage2"],
+        default="stage1",
+    )
+    # Retained for old scripts; it is normalized to --training_stage stage2.
     parser.add_argument("--train_stage2_only", action="store_true")
     parser.add_argument("--disable_stage2", action="store_true")
 
-    if input_args is not None:
-        return parser.parse_args(input_args)
-    return parser.parse_args()
+    args = parser.parse_args(input_args)
+    if args.train_stage2_only:
+        args.training_stage = "stage2"
+    return args
 
 
 def collect_generator_params(model_gen: FDE_SR_gen, args):
     layers_to_opt = []
-    if not args.train_stage2_only:
+    if args.training_stage == "stage1":
         for name, param in model_gen.unet.named_parameters():
             if param.requires_grad and ("lora" in name or "conv_in" in name):
                 layers_to_opt.append(param)
@@ -216,7 +230,9 @@ def main(args):
     if args.resume_fde_sr_path:
         model_gen.load_pretrained_base(args.resume_fde_sr_path, strict=False)
 
-    use_vsd = (not args.train_stage2_only) and (args.lambda_vsd > 0 or args.lambda_vsd_lora > 0)
+    use_vsd = args.training_stage == "stage1" and (
+        args.lambda_vsd > 0 or args.lambda_vsd_lora > 0
+    )
     model_reg = None
     if use_vsd:
         model_reg = FDE_SR_reg(args=args, accelerator=accelerator)
@@ -224,7 +240,7 @@ def main(args):
 
     net_lpips = lpips.LPIPS(net="vgg").cuda()
     net_lpips.requires_grad_(False)
-    fde_loss = FDE_SRLoss(
+    ref_wrd_loss = ReFWRDLoss(
         lambda_wavelet=args.lambda_fde_wavelet,
         lambda_residual=args.lambda_fde_residual,
         lambda_high=args.lambda_fde_high,
@@ -234,6 +250,9 @@ def main(args):
 
     model_gen.vae.set_adapter(["default_encoder"])
     model_gen.unet.set_adapter(["default_encoder", "default_decoder", "default_others"])
+    # Some PEFT versions update requires_grad while activating adapters.
+    # Re-apply the paper's stage-specific freeze policy afterwards.
+    model_gen.set_train()
     if model_reg is not None:
         model_reg.unet_update.set_adapter(["default_encoder", "default_decoder", "default_others"])
 
@@ -346,16 +365,36 @@ def main(args):
                     args=args,
                 )
 
-                loss_l2 = F.mse_loss(x_tgt_pred.float(), x_tgt.float(), reduction="mean") * args.lambda_l2
-                loss_lpips = net_lpips(x_tgt_pred.float(), x_tgt.float()).mean() * args.lambda_lpips
-                fde_losses = fde_loss(
-                    x_tgt_pred.float(),
-                    x_tgt.float(),
-                    lq=x_src.float(),
-                    base=aux.get("base_output", None).float() if "base_output" in aux else None,
-                )
-                loss_fde = sum(fde_losses.values())
-                loss = loss_l2 + loss_lpips + loss_fde
+                if args.training_stage == "stage1":
+                    loss_reconstruction = F.mse_loss(
+                        x_tgt_pred.float(),
+                        x_tgt.float(),
+                        reduction="mean",
+                    ) * args.lambda_l2
+                    loss_lpips = net_lpips(
+                        x_tgt_pred.float(), x_tgt.float()
+                    ).mean() * args.lambda_lpips
+                    ref_wrd_losses = {}
+                else:
+                    # The Stage-I path and FDPL are frozen by set_train().
+                    # Stage II follows the paper objective: image L1 + LPIPS
+                    # + WCS + an L1 penalty on the latent residual itself.
+                    loss_reconstruction = F.l1_loss(
+                        x_tgt_pred.float(),
+                        x_tgt.float(),
+                        reduction="mean",
+                    ) * args.lambda_stage2_rec
+                    loss_lpips = net_lpips(
+                        x_tgt_pred.float(), x_tgt.float()
+                    ).mean() * args.lambda_stage2_lpips
+                    ref_wrd_losses = ref_wrd_loss(
+                        x_tgt_pred.float(),
+                        x_tgt.float(),
+                        base=aux["base_output"].float(),
+                        latent_residual=aux["ref_wrd_latent_residual"],
+                    )
+                loss_ref_wrd = sum(ref_wrd_losses.values())
+                loss = loss_reconstruction + loss_lpips + loss_ref_wrd
 
                 loss_kl = x_tgt_pred.new_tensor(0.0)
                 if model_reg is not None and args.lambda_vsd > 0:
@@ -410,12 +449,12 @@ def main(args):
                 if accelerator.is_main_process:
                     logs = {
                         "loss_total": loss.detach().item(),
-                        "loss_l2": loss_l2.detach().item(),
+                        "loss_reconstruction": loss_reconstruction.detach().item(),
                         "loss_lpips": loss_lpips.detach().item(),
                         "loss_kl": loss_kl.detach().item(),
                         "loss_d": loss_d.detach().item(),
                     }
-                    for key, value in fde_losses.items():
+                    for key, value in ref_wrd_losses.items():
                         logs[key] = value.detach().item()
                     if "fde_prompt_low_gate" in aux:
                         logs["fde_gate_low"] = aux["fde_prompt_low_gate"].float().mean().item()
@@ -424,7 +463,11 @@ def main(args):
                     progress_bar.set_postfix(**logs)
 
                     if global_step % args.checkpointing_steps == 1:
-                        outf = os.path.join(args.output_dir, "checkpoints", f"fde_sr_{global_step}.pkl")
+                        outf = os.path.join(
+                            args.output_dir,
+                            "checkpoints",
+                            f"ref_wrd_{global_step}.pkl",
+                        )
                         accelerator.unwrap_model(model_gen).save_model(outf)
 
                     accelerator.log(logs, step=global_step)

@@ -10,9 +10,10 @@ SEED="${SEED:-42}"
 OUTPUT_DIR="${OUTPUT_DIR:-experience/refwrd_stage1_seed${SEED}}"
 CUDA_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
 
-CUDA_VISIBLE_DEVICES="${CUDA_DEVICES}" accelerate launch train_fde_sr_base.py \
+CUDA_VISIBLE_DEVICES="${CUDA_DEVICES}" accelerate launch train_fde_sr.py \
   --pretrained_model_name_or_path="${SD21BASE_PATH}" \
   --ram_path="${RAM_PATH}" \
+  --training_stage=stage1 \
   --learning_rate=5e-5 \
   --train_batch_size=4 \
   --gradient_accumulation_steps=1 \
@@ -31,6 +32,8 @@ CUDA_VISIBLE_DEVICES="${CUDA_DEVICES}" accelerate launch train_fde_sr_base.py \
   --lambda_l2=1 \
   --lambda_vsd=1 \
   --lambda_vsd_lora=1 \
+  --fde_num_tokens=77 \
+  --fde_token_rank=16 \
   --deg_file_path="dataloaders/params_realesrgan.yml" \
   --tracker_project_name "train_refwrd_stage1"
 

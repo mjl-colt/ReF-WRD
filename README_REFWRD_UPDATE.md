@@ -1,9 +1,9 @@
-# ReF-WRD: Reliability-Aware Frequency Conditioning and Wavelet-Guided Residual Diffusion
+# ReF-WRD: Reliability-Aware Frequency Conditioning and Wavelet-Guided Residual Denoising
 
 This repository provides the core implementation and main evaluation protocol
 for **ReF-WRD**, the method described in the manuscript:
 
-> Reliability-Aware Frequency Conditioning and Wavelet-Guided Residual Diffusion
+> Reliability-Aware Frequency Conditioning and Wavelet-Guided Residual Denoising
 > for Real-World Image Super-Resolution
 
 The code base retains several internal file names using `fde_sr` from an earlier
@@ -12,10 +12,11 @@ components:
 
 ```text
 fde_sr.py                         ReF-WRD generator and inference wrapper
+ref_wrd.py                        canonical paper-named import aliases
 fde_sr_core.py                    OSEDiff-style one-step latent restoration backbone
-models/fde_sr_modules.py          FDPL, residual correction, A-WRM, and losses
-train_fde_sr_base.py              Stage-I base restoration training
-train_fde_sr.py                   full / Stage-II training entry
+models/ref_wrd_modules.py         FDPL, latent correction, A-WRM, and WCS
+models/fde_sr_modules.py          compatibility exports for old imports
+train_fde_sr.py                   Stage-I / Stage-II training entry
 test_fde_sr.py                    ReF-WRD inference entry
 test_metrics.py                   metric evaluation entry
 ```
@@ -25,9 +26,9 @@ test_metrics.py                   metric evaluation entry
 - **FDPL**: frequency-decoupled prompt learning with reliability gating.
 - **Stage-I base restoration**: OSEDiff-style one-step latent restoration from
   the low-quality latent.
-- **Stage-II residual correction / RC**: scale-controlled residual correction
-  around the frozen Stage-I base. This branch does not introduce an additional
-  diffusion reverse sampling trajectory.
+- **Stage-II residual correction / RC**: a scale-controlled latent residual
+  around the frozen Stage-I base and condition. This branch does not introduce
+  an additional diffusion reverse sampling trajectory.
 - **A-WRM**: adaptive wavelet residual modulation in latent space.
 - **WCS**: image-domain wavelet consistency supervision.
 

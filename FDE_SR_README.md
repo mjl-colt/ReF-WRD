@@ -1,96 +1,84 @@
-﻿> Naming note: `FDE_SR` is the internal development name retained by several code files. It corresponds to the ReF-WRD method described in the manuscript.
-# FDE_SR Implementation Notes
+# ReF-WRD implementation notes
 
-This note documents the FDE_SR code path in this repository. FDE_SR is organized
-as a frequency-decoupled super-resolution model with a one-step latent
-restoration backbone and a wavelet-modulated residual refinement stage.
+`FDE_SR` is the internal development name retained by several code files. It
+corresponds to the ReF-WRD method described in the manuscript. The active
+implementation follows the manuscript while preserving old command names.
 
-## Main Components
+## Paper-to-code mapping
 
-- `models/fde_sr_modules.py`
-  - `HaarWaveletTransform`
-  - `FrequencyDescriptor`
-  - `FrequencyDecoupledPromptLearner`
-  - `StageIIResidualCorrector`
-  - `AdaptiveWaveletResidualModulator`
-  - `FDE_SRLoss`
+- **FDPL** (`models/ref_wrd_modules.py`): fixed Gaussian low/high-frequency
+  decomposition, independent shallow CNN encoders, independent low-rank token
+  adapters, and a token-wise reliability gate. The fused condition is normalized
+  as `LN(t_low + lambda_g * gate * t_high)`.
+- **Stage I** (`fde_sr.py`): one-step latent restoration conditioned by FDPL.
+- **Stage II** (`LatentResidualCorrector`): predicts one residual in VAE latent
+  space around a detached Stage-I base latent and detached FDPL condition.
+- **A-WRM** (`AdaptiveWaveletResidualModulator`): non-decimated stationary Haar
+  transform, a depth-wise LL residual processor, two channel-attention HF
+  residual blocks, and four channel-wise subband gates.
+- **WCS** (`wavelet_consistency_loss`): matches restored HF bands to the target
+  and anchors the restored LL band to the detached Stage-I base image.
 
-- `fde_sr.py`
-  - `FDE_SR_gen`
-  - `FDE_SR_test`
-  - `FDE_SR_inference_time`
-  - checkpoint save/load helpers
+## Two-stage training
 
-- `train_fde_sr.py`
-  - training loop with reconstruction, perceptual, distribution matching,
-    residual alignment, high-frequency, and wavelet consistency losses
-
-- `test_fde_sr.py`
-  - inference entry with optional base/residual outputs
-
-## Training
+Stage I trains the one-step backbone and FDPL; the latent corrector is frozen:
 
 ```bash
-bash scripts/train/train_fde_sr.sh
+accelerate launch train_fde_sr.py --training_stage stage1 [other arguments]
 ```
 
-For stage-II focused training:
+Stage II freezes the entire Stage-I path and FDPL, and trains only the latent
+corrector with image L1, LPIPS, WCS, and latent-residual L1 objectives:
 
 ```bash
-bash scripts/train/train_fde_sr_stage2.sh
+accelerate launch train_fde_sr.py \
+  --training_stage stage2 \
+  --resume_fde_sr_path=STAGE1_CHECKPOINT \
+  --lambda_stage2_rec=1.0 \
+  --lambda_stage2_lpips=0.2 \
+  --lambda_fde_wavelet=1.0 \
+  --lambda_fde_residual=0.5 \
+  --wavelet_ll_weight=0.2 \
+  --wavelet_high_weight=1.0 \
+  [other arguments]
 ```
 
-Important arguments:
-
-```bash
---resume_fde_sr_path=preset/models/fde_sr_base.pkl
---lambda_fde_wavelet=0.5
---lambda_fde_residual=0.25
---lambda_fde_high=0.1
---fde_hidden_dim=128
---fde_prompt_hidden_dim=256
---fde_num_blocks=6
---fde_residual_scale=0.25
-```
+`--train_stage2_only` remains as an alias for `--training_stage stage2`.
 
 ## Inference
 
 ```bash
 python test_fde_sr.py \
-    -i preset/datasets/test_dataset/input \
-    -o preset/datasets/test_dataset/output_fde_sr \
-    --fde_sr_path experience/fde_sr/checkpoints/fde_sr_1.pkl \
-    --pretrained_model_name_or_path SD21BASE_PATH \
-    --ram_ft_path DAPE_PATH \
-    --ram_path RAM_PATH \
-    --save_intermediate
+  -i INPUT_DIRECTORY \
+  -o OUTPUT_DIRECTORY \
+  --fde_sr_path CHECKPOINT \
+  --pretrained_model_name_or_path SD21BASE_PATH \
+  --ram_ft_path DAPE_PATH \
+  --ram_path RAM_PATH \
+  --save_intermediate
 ```
 
-Intermediate outputs:
+The optional intermediate outputs are the Stage-I base image and the decoded
+effect of the latent residual. `--disable_stage2` provides the Stage-I ablation.
 
-- `output_fde_sr/base/`: one-step base restoration
-- `output_fde_sr/residual/`: normalized residual visualization
-- `output_fde_sr/`: final FDE_SR restoration
-
-## Checkpoint Layout
+## Checkpoint layout
 
 ```python
 {
-    "format": "fde_sr_v1",
+    "format": "ref_wrd_v2",
     "base": {...},
-    "fde_prompt": {...},
-    "fde_stage2": {...},
+    "ref_wrd_prompt": {...},
+    "ref_wrd_stage2": {...},
     "fde_config": {...},
 }
 ```
 
-## Ablation Switches
+The loader also accepts the old `fde_prompt` and `fde_stage2` keys. Tensors that
+do not match the paper-aligned architecture are skipped during non-strict load.
+
+## Lightweight checks
 
 ```bash
---disable_stage2
---train_stage2_only
---lambda_fde_wavelet=0
---lambda_fde_residual=0
---lambda_fde_high=0
+python -m pytest test_fde_sr_modules.py -q
+python -m py_compile models/ref_wrd_modules.py fde_sr.py train_fde_sr.py
 ```
-

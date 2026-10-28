@@ -1,5 +1,6 @@
 stage: stage2_residual_correction
 entry: train_fde_sr.py
+training_stage: stage2
 seed: 42
 resume_from: preset/models/refwrd_stage1_base.pkl
 
@@ -11,22 +12,27 @@ optimization:
   checkpointing_steps: 500
 
 loss:
-  lambda_l2: 1.0
-  lambda_lpips: 2.0
-  lambda_fde_wavelet: 0.75
+  lambda_stage2_rec: 1.0
+  lambda_stage2_lpips: 0.2
+  lambda_fde_wavelet: 1.0
   lambda_fde_residual: 0.5
-  lambda_fde_high: 0.15
+  lambda_fde_high: 0.0
+  wavelet_ll_weight: 0.2
+  wavelet_high_weight: 1.0
 
 module:
   fde_hidden_dim: 128
   fde_prompt_hidden_dim: 256
+  fde_num_tokens: 77
+  fde_token_rank: 16
+  fde_latent_channels: 4
   fde_num_blocks: 6
-  fde_residual_scale: 0.25
+  fde_residual_scale: 0.5
 
 degradation:
   config: dataloaders/params_realesrgan.yml
 
 notes:
-  - "Stage-II trains the residual correction branch around the Stage-I base."
+  - "Stage-II freezes Stage I and FDPL and trains the latent residual branch."
   - "It does not introduce an additional diffusion reverse sampling trajectory."
 
